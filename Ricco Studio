@@ -1,0 +1,622 @@
+src/App.jsx
+import { useState, useEffect } from "react";
+
+/* ── PERSISTENCE ── */
+function useLS(key, init) {
+const [val, setVal] = useState(() => {
+try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : init; }
+catch { return init; }
+});
+useEffect(() => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }, [key, val]);
+return [val, setVal];
+}
+
+/* ── HELPERS ── */
+function todayStr() { return new Date().toISOString().split("T")[0]; }
+function fmtDate(d) {
+if (!d) return "";
+const [y, m, day] = d.split("-");
+return `${day}/${m}/${y}`;
+}
+function fmtDateShort(d) {
+if (!d) return "";
+const [, m, day] = d.split("-");
+const months = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+return `${parseInt(day)} ${months[parseInt(m)-1]}`;
+}
+function toICSDate(date, time) {
+const [y, m, d] = date.split("-");
+if (!time) return `${y}${m}${d}`;
+const [h, min] = time.split(":");
+return `${y}${m}${d}T${h}${min}00`;
+}
+function exportToICS(ev) {
+const start = toICSDate(ev.date, ev.time);
+const [y, m, d] = ev.date.split("-");
+let end;
+if (ev.time) {
+const [h, min] = ev.time.split(":").map(Number);
+end = `${y}${m}${d}T${String(h+1).padStart(2,"0")}${String(min).padStart(2,"0")}00`;
+} else { end = `${y}${m}${d}`; }
+const ics = ["BEGIN:VCALENDAR","VERSION:2.0","BEGIN:VEVENT",
+`SUMMARY:${ev.title}`,`DTSTART:${start}`,`DTEND:${end}`,
+ev.local?`LOCATION:${ev.local}`:"", ev.desc?`DESCRIPTION:${ev.desc}`:"",
+`UID:${ev.id}@ricco`,"END:VEVENT","END:VCALENDAR"].filter(Boolean).join("\r\n");
+const a = document.createElement("a");
+a.href = URL.createObjectURL(new Blob([ics],{type:"text/calendar"}));
+a.download = `${ev.title.replace(/\s+/g,"_")}.ics`;
+a.click();
+}
+function googleUrl(ev) {
+const fmt = (date, time) => {
+const [y,m,d] = date.split("-");
+if (!time) return `${y}${m}${d}`;
+const [h,min] = time.split(":");
+return `${y}${m}${d}T${h}${min}00Z`;
+};
+const start = fmt(ev.date, ev.time);
+let end;
+if (ev.time) {
+const [h,min] = ev.time.split(":").map(Number);
+end = fmt(ev.date,`${String(h+1).padStart(2,"0")}:${String(min).padStart(2,"0")}`);
+} else { const [y,m,d]=ev.date.split("-"); end=`${y}${m}${d}`; }
+return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(ev.title)}&dates=${start}/${end}&details=${encodeURIComponent(ev.desc||"")}&location=${encodeURIComponent(ev.local||"")}`;
+}
+
+/* ── TOKENS ── */
+const C = {
+bg:"#111318", surface:"#1C1F27", card:"#23262F", border:"#2E3140",
+accent:"#C8FF57", blue:"#4F8EF7", blueSoft:"#1A2A4A",
+teal:"#34D4C8", tealSoft:"#0D2928",
+red:"#FF5B5B", redSoft:"#2D1010",
+yellow:"#FFD166", yellowSoft:"#2D2208",
+text:"#F0F2F8", sub:"#9AA5C0", muted:"#555D75",
+};
+const CARD_COLORS = [
+{bg:"#C8FF57",text:"#111"},{bg:"#4F8EF7",text:"#fff"},
+{bg:"#FF7A3D",text:"#fff"},{bg:"#34D4C8",text:"#111"},
+{bg:"#FFD166",text:"#111"},{bg:"#a78bfa",text:"#fff"},
+];
+const NAV = [
+{id:"home",icon:"⊞",label:"Início"},
+{id:"agenda",icon:"📅",label:"Agenda"},
+{id:"tasks",icon:"✓",label:"Tarefas"},
+{id:"contacts",icon:"👤",label:"Contatos"},
+{id:"notes",icon:"📝",label:"Notas"},
+];
+
+/* ── UI ── */
+function Sheet({open,onClose,title,children}) {
+useEffect(()=>{document.body.style.overflow=open?"hidden":"";return()=>{document.body.style.overflow="";};},[open]);
+if (!open) return null;
+return (
+<div style={{position:"fixed",inset:0,zIndex:200,display:"flex",flexDirection:"column",justifyContent:"flex-end"}} onClick={onClose}>
+<div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.65)",backdropFilter:"blur(4px)"}}/>
+<div onClick={e=>e.stopPropagation()} style={{position:"relative",background:C.surface,borderRadius:"24px 24px 0 0",padding:"0 20px 40px",maxHeight:"92vh",overflowY:"auto",animation:"sheetUp 0.28s cubic-bezier(.32,0,.15,1)"}}>
+<div style={{width:40,height:4,borderRadius:2,background:C.border,margin:"12px auto 20px"}}/>
+{title&&<div style={{fontSize:18,fontWeight:800,color:C.text,marginBottom:20}}>{title}</div>}
+{children}
+</div>
+</div>
+);
+}
+function Field({label,children}) {
+return <div style={{marginBottom:14}}><div style={{fontSize:11,color:C.muted,fontWeight:700,letterSpacing:"0.08em",marginBottom:6,textTransform:"uppercase"}}>{label}</div>{children}</div>;
+}
+function Inp(p) {
+return <input style={{width:"100%",background:C.card,border:`1.5px solid ${C.border}`,borderRadius:12,padding:"12px 14px",color:C.text,fontSize:15,outline:"none",boxSizing:"border-box"}} onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border} {...p}/>;
+}
+function Sel({children,...p}) {
+return <select style={{width:"100%",background:C.card,border:`1.5px solid ${C.border}`,borderRadius:12,padding:"12px 14px",color:C.text,fontSize:15,outline:"none",boxSizing:"border-box",cursor:"pointer"}} {...p}>{children}</select>;
+}
+function Txta(p) {
+return <textarea style={{width:"100%",background:C.card,border:`1.5px solid ${C.border}`,borderRadius:12,padding:"12px 14px",color:C.text,fontSize:15,outline:"none",boxSizing:"border-box",resize:"vertical",minHeight:80}} onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border} {...p}/>;
+}
+function PBtn({children,style:s,...p}) {
+return <button style={{width:"100%",background:C.accent,color:"#111",border:"none",borderRadius:16,padding:"15px",fontSize:16,fontWeight:800,cursor:"pointer",...s}} {...p}>{children}</button>;
+}
+function GBtn({children,style:s,...p}) {
+return <button style={{background:"transparent",color:C.sub,border:`1.5px solid ${C.border}`,borderRadius:12,padding:"10px 18px",fontSize:14,fontWeight:600,cursor:"pointer",...s}} {...p}>{children}</button>;
+}
+function Chip({label,active,onClick,color}) {
+return <button onClick={onClick} style={{background:active?(color||C.accent):C.card,color:active?"#111":C.sub,border:`1.5px solid ${active?(color||C.accent):C.border}`,borderRadius:50,padding:"7px 16px",fontSize:13,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>{label}</button>;
+}
+
+/* ── HOME ── */
+function HomeScreen({events,tasks,contacts,setTab}) {
+const now = new Date();
+const hour = now.getHours();
+const greeting = hour<12?"Bom dia":hour<18?"Boa tarde":"Boa noite";
+const todayEvs = events.filter(e=>e.date===todayStr()).sort((a,b)=>(a.time||"").localeCompare(b.time||""));
+const pending = tasks.filter(t=>t.status!=="concluida");
+const urgent = pending.filter(t=>t.priority==="alta");
+
+return (
+<div style={{padding:"0 20px"}}>
+<div style={{marginBottom:28}}>
+<div style={{fontSize:14,color:C.sub,marginBottom:4}}>{greeting} 👋</div>
+<div style={{fontSize:28,fontWeight:800,color:C.text,lineHeight:1.2}}>Ricco Studio</div>
+<div style={{fontSize:13,color:C.muted,marginTop:4}}>{now.toLocaleDateString("pt-BR",{weekday:"long",day:"2-digit",month:"long"})}</div>
+</div>
+
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:24}}>
+{[
+{label:"Hoje",value:todayEvs.length,unit:"eventos",color:C.accent,tab:"agenda"},
+{label:"Tarefas",value:pending.length,unit:"pendentes",color:C.blue,tab:"tasks"},
+{label:"Contatos",value:contacts.length,unit:"salvos",color:C.teal,tab:"contacts"},
+].map(s=>(
+<div key={s.label} onClick={()=>setTab(s.tab)} style={{background:C.card,borderRadius:18,padding:"16px 12px",cursor:"pointer",border:`1.5px solid ${C.border}`}}>
+<div style={{fontSize:26,fontWeight:800,color:s.color}}>{s.value}</div>
+<div style={{fontSize:11,color:C.muted,marginTop:2,fontWeight:600}}>{s.unit}</div>
+</div>
+))}
+</div>
+
+{urgent.length>0&&(
+<div style={{marginBottom:24}}>
+<div style={{fontSize:13,fontWeight:700,color:C.red,marginBottom:10,letterSpacing:"0.06em",textTransform:"uppercase"}}>⚡ Urgente</div>
+{urgent.slice(0,3).map(t=>(
+<div key={t.id} onClick={()=>setTab("tasks")} style={{background:C.redSoft,border:`1.5px solid ${C.red}44`,borderRadius:14,padding:"12px 16px",marginBottom:8,cursor:"pointer",display:"flex",alignItems:"center",gap:12}}>
+<div style={{width:8,height:8,borderRadius:"50%",background:C.red,flexShrink:0}}/>
+<div style={{flex:1,fontSize:14,fontWeight:600,color:C.text}}>{t.title}</div>
+{t.due&&<div style={{fontSize:11,color:C.red}}>{fmtDateShort(t.due)}</div>}
+</div>
+))}
+</div>
+)}
+
+<div style={{marginBottom:24}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+<div style={{fontSize:13,fontWeight:700,color:C.sub,letterSpacing:"0.06em",textTransform:"uppercase"}}>Hoje</div>
+<button onClick={()=>setTab("agenda")} style={{background:"none",border:"none",color:C.accent,fontSize:13,fontWeight:700,cursor:"pointer"}}>Ver tudo →</button>
+</div>
+{todayEvs.length===0?(
+<div style={{background:C.card,borderRadius:16,padding:20,textAlign:"center",color:C.muted,fontSize:14,border:`1.5px solid ${C.border}`}}>Nenhum evento hoje</div>
+):todayEvs.slice(0,3).map((ev,i)=>{
+const cc=CARD_COLORS[i%CARD_COLORS.length];
+return <div key={ev.id} onClick={()=>setTab("agenda")} style={{background:cc.bg,borderRadius:18,padding:"16px 18px",marginBottom:10,cursor:"pointer",display:"flex",gap:14,alignItems:"center"}}>
+<div style={{fontSize:20,fontWeight:800,color:cc.text,minWidth:52}}>{ev.time||"--"}</div>
+<div style={{flex:1}}>
+<div style={{fontSize:15,fontWeight:700,color:cc.text}}>{ev.title}</div>
+{ev.local&&<div style={{fontSize:12,color:cc.text,opacity:0.7,marginTop:2}}>📍 {ev.local}</div>}
+</div>
+</div>;
+})}
+</div>
+
+{contacts.length>0&&(
+<div style={{marginBottom:8}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+<div style={{fontSize:13,fontWeight:700,color:C.sub,letterSpacing:"0.06em",textTransform:"uppercase"}}>Contatos</div>
+<button onClick={()=>setTab("contacts")} style={{background:"none",border:"none",color:C.accent,fontSize:13,fontWeight:700,cursor:"pointer"}}>Ver tudo →</button>
+</div>
+<div style={{display:"flex",gap:12,overflowX:"auto",paddingBottom:4}}>
+{contacts.slice(0,6).map((c,i)=>{
+const cc=CARD_COLORS[i%CARD_COLORS.length];
+return <div key={c.id} onClick={()=>setTab("contacts")} style={{flexShrink:0,textAlign:"center",cursor:"pointer"}}>
+<div style={{width:52,height:52,borderRadius:16,background:cc.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:800,color:cc.text,marginBottom:6}}>
+{c.name.split(" ").slice(0,2).map(w=>w[0]).join("").toUpperCase()}
+</div>
+<div style={{fontSize:11,color:C.sub,maxWidth:52,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.name.split(" ")[0]}</div>
+</div>;
+})}
+</div>
+</div>
+)}
+</div>
+);
+}
+
+/* ── AGENDA ── */
+function AgendaScreen({events,setEvents}) {
+const [filterDate,setFilterDate]=useState(todayStr());
+const [sheet,setSheet]=useState(false);
+const [exportMenu,setExportMenu]=useState(null);
+const [form,setForm]=useState({title:"",date:todayStr(),time:"",local:"",desc:"",tipo:"reuniao",status:"agendado"});
+const [editId,setEditId]=useState(null);
+const STATUS={agendado:{label:"Agendado",color:C.blue},realizado:{label:"Realizado",color:C.accent},cancelado:{label:"Cancelado",color:C.red},reagendado:{label:"Reagendado",color:C.yellow}};
+const TIPOS={reuniao:"Reunião",visita:"Visita",outro:"Outro"};
+
+function openAdd(){setForm({title:"",date:filterDate,time:"",local:"",desc:"",tipo:"reuniao",status:"agendado"});setEditId(null);setSheet(true);}
+function openEdit(ev){setForm({...ev});setEditId(ev.id);setSheet(true);}
+function save(){
+if(!form.title||!form.date)return;
+if(editId) setEvents(es=>es.map(e=>e.id===editId?{...form,id:editId}:e));
+else setEvents(es=>[...es,{...form,id:Date.now()}]);
+setSheet(false);
+}
+
+const allDates=[...new Set(events.map(e=>e.date))].sort();
+const filtered=events.filter(e=>e.date===filterDate).sort((a,b)=>(a.time||"").localeCompare(b.time||""));
+
+return (
+<div onClick={()=>setExportMenu(null)}>
+<div style={{padding:"0 20px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+<div>
+<div style={{fontSize:24,fontWeight:800,color:C.text}}>Agenda</div>
+<div style={{fontSize:13,color:C.muted}}>{fmtDate(filterDate)}</div>
+</div>
+<button onClick={openAdd} style={{background:C.accent,color:"#111",border:"none",borderRadius:14,padding:"10px 18px",fontSize:15,fontWeight:800,cursor:"pointer"}}>+ Novo</button>
+</div>
+<div style={{display:"flex",gap:8,overflowX:"auto",padding:"0 20px 12px",scrollbarWidth:"none"}}>
+<Chip label="Hoje" active={filterDate===todayStr()} onClick={()=>setFilterDate(todayStr())}/>
+{allDates.filter(d=>d!==todayStr()).map(d=><Chip key={d} label={fmtDateShort(d)} active={filterDate===d} onClick={()=>setFilterDate(d)}/>)}
+</div>
+<div style={{padding:"0 20px 16px"}}>
+<input type="date" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={{background:C.card,border:`1.5px solid ${C.border}`,borderRadius:12,padding:"10px 14px",color:C.sub,fontSize:14,outline:"none",width:"100%",boxSizing:"border-box"}}/>
+</div>
+<div style={{padding:"0 20px",display:"flex",flexDirection:"column",gap:12}}>
+{filtered.length===0?(
+<div style={{textAlign:"center",padding:"48px 0",color:C.muted}}><div style={{fontSize:40,marginBottom:12}}>📭</div>Nenhum evento para este dia</div>
+):filtered.map((ev,i)=>{
+const cc=CARD_COLORS[i%CARD_COLORS.length];
+const s=STATUS[ev.status]||STATUS.agendado;
+return (
+<div key={ev.id} style={{background:cc.bg,borderRadius:20,padding:"18px 18px 14px"}}>
+<div style={{display:"flex",justifyContent:"space-between",gap:8}}>
+<div style={{flex:1}}>
+<div style={{display:"flex",gap:6,marginBottom:4,flexWrap:"wrap"}}>
+<span style={{fontSize:12,color:cc.text,opacity:0.7,fontWeight:600}}>{TIPOS[ev.tipo]||"Outro"} · {ev.time||"Sem horário"}</span>
+<span style={{background:"rgba(0,0,0,0.15)",color:cc.text,borderRadius:6,padding:"1px 8px",fontSize:11,fontWeight:700}}>{s.label}</span>
+</div>
+<div style={{fontSize:18,fontWeight:800,color:cc.text,marginBottom:ev.local?4:0}}>{ev.title}</div>
+{ev.local&&<div style={{fontSize:13,color:cc.text,opacity:0.7}}>📍 {ev.local}</div>}
+{ev.desc&&<div style={{fontSize:13,color:cc.text,opacity:0.6,marginTop:6}}>{ev.desc}</div>}
+</div>
+<div style={{display:"flex",flexDirection:"column",gap:6}}>
+<div style={{position:"relative"}}>
+<button onClick={e=>{e.stopPropagation();setExportMenu(exportMenu===ev.id?null:ev.id);}} style={{background:"rgba(0,0,0,0.15)",border:"none",borderRadius:10,padding:"8px 10px",cursor:"pointer",fontSize:14,color:cc.text}}>📆</button>
+{exportMenu===ev.id&&(
+<div onClick={e=>e.stopPropagation()} style={{position:"absolute",right:0,top:"110%",zIndex:100,background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,overflow:"hidden",minWidth:190,boxShadow:"0 8px 32px rgba(0,0,0,0.5)"}}>
+<div style={{padding:"8px 14px 6px",fontSize:10,color:C.muted,fontWeight:700,letterSpacing:"0.08em",borderBottom:`1px solid ${C.border}`,textTransform:"uppercase"}}>Exportar para</div>
+<a href={googleUrl(ev)} target="_blank" rel="noreferrer" onClick={()=>setExportMenu(null)} style={{display:"flex",alignItems:"center",gap:10,padding:"12px 14px",textDecoration:"none",color:C.text,fontSize:14,fontWeight:600,borderBottom:`1px solid ${C.border}`}}>🗓️ Google Calendar</a>
+<button onClick={()=>{exportToICS(ev);setExportMenu(null);}} style={{display:"flex",alignItems:"center",gap:10,padding:"12px 14px",width:"100%",background:"none",border:"none",cursor:"pointer",color:C.text,fontSize:14,fontWeight:600}}>🍎 Apple / iPhone</button>
+</div>
+)}
+</div>
+<button onClick={()=>openEdit(ev)} style={{background:"rgba(0,0,0,0.15)",border:"none",borderRadius:10,padding:"8px 10px",cursor:"pointer",fontSize:14,color:cc.text}}>✏️</button>
+<button onClick={()=>setEvents(es=>es.filter(e=>e.id!==ev.id))} style={{background:"rgba(0,0,0,0.15)",border:"none",borderRadius:10,padding:"8px 10px",cursor:"pointer",fontSize:14,color:cc.text}}>🗑</button>
+</div>
+</div>
+</div>
+);
+})}
+</div>
+<Sheet open={sheet} onClose={()=>setSheet(false)} title={editId?"Editar evento":"Novo evento"}>
+<Field label="Título"><Inp value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))} placeholder="Ex: Reunião com cliente"/></Field>
+<div style={{display:"flex",gap:10}}>
+<div style={{flex:1}}><Field label="Data"><Inp type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/></Field></div>
+<div style={{flex:1}}><Field label="Horário"><Inp type="time" value={form.time} onChange={e=>setForm(f=>({...f,time:e.target.value}))}/></Field></div>
+</div>
+<Field label="Local"><Inp value={form.local} onChange={e=>setForm(f=>({...f,local:e.target.value}))} placeholder="Ex: Sala 2, Zoom..."/></Field>
+<div style={{display:"flex",gap:10}}>
+<div style={{flex:1}}><Field label="Tipo"><Sel value={form.tipo} onChange={e=>setForm(f=>({...f,tipo:e.target.value}))}><option value="reuniao">Reunião</option><option value="visita">Visita</option><option value="outro">Outro</option></Sel></Field></div>
+<div style={{flex:1}}><Field label="Status"><Sel value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))}><option value="agendado">Agendado</option><option value="realizado">Realizado</option><option value="cancelado">Cancelado</option><option value="reagendado">Reagendado</option></Sel></Field></div>
+</div>
+<Field label="Descrição"><Txta value={form.desc} onChange={e=>setForm(f=>({...f,desc:e.target.value}))} placeholder="Detalhes..."/></Field>
+<div style={{display:"flex",gap:10,marginTop:4}}>
+<GBtn onClick={()=>setSheet(false)} style={{flex:1}}>Cancelar</GBtn>
+<PBtn onClick={save} style={{flex:2}}>Salvar evento</PBtn>
+</div>
+</Sheet>
+</div>
+);
+}
+
+/* ── TASKS ── */
+function TasksScreen({tasks,setTasks}) {
+const [filter,setFilter]=useState("todas");
+const [sheet,setSheet]=useState(false);
+const [form,setForm]=useState({title:"",priority:"media",status:"pendente",due:"",resp:"",desc:""});
+const [editId,setEditId]=useState(null);
+const PRIO={alta:{color:C.red,bg:C.redSoft},media:{color:C.yellow,bg:C.yellowSoft},baixa:{color:C.teal,bg:C.tealSoft}};
+const total=tasks.length, done=tasks.filter(t=>t.status==="concluida").length;
+const pending=tasks.filter(t=>t.status==="pendente").length, wip=tasks.filter(t=>t.status==="andamento").length;
+const filtered=filter==="todas"?tasks:tasks.filter(t=>t.status===filter);
+
+function openAdd(){setForm({title:"",priority:"media",status:"pendente",due:"",resp:"",desc:""});setEditId(null);setSheet(true);}
+function openEdit(t){setForm({...t});setEditId(t.id);setSheet(true);}
+function save(){
+if(!form.title)return;
+if(editId) setTasks(ts=>ts.map(t=>t.id===editId?{...form,id:editId}:t));
+else setTasks(ts=>[...ts,{...form,id:Date.now()}]);
+setSheet(false);
+}
+function toggle(t){setTasks(ts=>ts.map(x=>x.id===t.id?{...x,status:x.status==="concluida"?"pendente":"concluida"}:x));}
+
+return (
+<div>
+<div style={{padding:"0 20px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+<div>
+<div style={{fontSize:24,fontWeight:800,color:C.text}}>Tarefas</div>
+<div style={{fontSize:13,color:C.muted}}>{pending} pendentes</div>
+</div>
+<button onClick={openAdd} style={{background:C.accent,color:"#111",border:"none",borderRadius:14,padding:"10px 18px",fontSize:15,fontWeight:800,cursor:"pointer"}}>+ Nova</button>
+</div>
+<div style={{padding:"0 20px 16px"}}>
+<div style={{background:C.card,borderRadius:12,overflow:"hidden",height:8}}>
+<div style={{height:"100%",background:C.accent,borderRadius:12,width:`${total?Math.round((done/total)*100):0}%`,transition:"width 0.4s"}}/>
+</div>
+<div style={{fontSize:11,color:C.muted,marginTop:6}}>{total?Math.round((done/total)*100):0}% concluído</div>
+</div>
+<div style={{display:"flex",gap:8,overflowX:"auto",padding:"0 20px 16px",scrollbarWidth:"none"}}>
+<Chip label="Todas" active={filter==="todas"} onClick={()=>setFilter("todas")}/>
+<Chip label={`Pendentes (${pending})`} active={filter==="pendente"} onClick={()=>setFilter("pendente")} color={C.yellow}/>
+<Chip label={`Andamento (${wip})`} active={filter==="andamento"} onClick={()=>setFilter("andamento")} color={C.blue}/>
+<Chip label={`Concluídas (${done})`} active={filter==="concluida"} onClick={()=>setFilter("concluida")} color={C.teal}/>
+</div>
+<div style={{padding:"0 20px",display:"flex",flexDirection:"column",gap:10}}>
+{filtered.length===0?(
+<div style={{textAlign:"center",padding:"48px 0",color:C.muted}}><div style={{fontSize:40,marginBottom:12}}>✅</div>Nenhuma tarefa aqui</div>
+):filtered.map(t=>{
+const p=PRIO[t.priority]||PRIO.media;
+return (
+<div key={t.id} style={{background:C.card,border:`1.5px solid ${C.border}`,borderRadius:18,padding:"14px 16px",display:"flex",gap:12,alignItems:"flex-start",opacity:t.status==="concluida"?0.6:1}}>
+<button onClick={()=>toggle(t)} style={{width:24,height:24,borderRadius:8,marginTop:1,flexShrink:0,border:`2px solid ${t.status==="concluida"?C.accent:C.border}`,background:t.status==="concluida"?C.accent:"transparent",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:"#111",fontSize:14,fontWeight:800}}>{t.status==="concluida"?"✓":""}</button>
+<div style={{flex:1}}>
+<div style={{fontSize:15,fontWeight:700,color:C.text,textDecoration:t.status==="concluida"?"line-through":"none",marginBottom:6}}>{t.title}</div>
+<div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+<span style={{background:p.bg,color:p.color,borderRadius:8,padding:"3px 10px",fontSize:11,fontWeight:700}}>{t.priority==="alta"?"Alta":t.priority==="media"?"Média":"Baixa"}</span>
+{t.resp&&<span style={{fontSize:12,color:C.muted}}>👤 {t.resp}</span>}
+{t.due&&<span style={{fontSize:12,color:C.muted}}>📅 {fmtDate(t.due)}</span>}
+</div>
+{t.desc&&<div style={{fontSize:12,color:C.muted,marginTop:6}}>{t.desc}</div>}
+</div>
+<div style={{display:"flex",flexDirection:"column",gap:6}}>
+<button onClick={()=>openEdit(t)} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 8px",cursor:"pointer",fontSize:13,color:C.sub}}>✏️</button>
+<button onClick={()=>setTasks(ts=>ts.filter(x=>x.id!==t.id))} style={{background:C.redSoft,border:`1px solid ${C.red}33`,borderRadius:8,padding:"6px 8px",cursor:"pointer",fontSize:13,color:C.red}}>🗑</button>
+</div>
+</div>
+);
+})}
+</div>
+<Sheet open={sheet} onClose={()=>setSheet(false)} title={editId?"Editar tarefa":"Nova tarefa"}>
+<Field label="Título"><Inp value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))} placeholder="Ex: Ligar para fornecedor"/></Field>
+<div style={{display:"flex",gap:10}}>
+<div style={{flex:1}}><Field label="Prioridade"><Sel value={form.priority} onChange={e=>setForm(f=>({...f,priority:e.target.value}))}><option value="alta">Alta</option><option value="media">Média</option><option value="baixa">Baixa</option></Sel></Field></div>
+<div style={{flex:1}}><Field label="Status"><Sel value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))}><option value="pendente">Pendente</option><option value="andamento">Em andamento</option><option value="concluida">Concluída</option></Sel></Field></div>
+</div>
+<div style={{display:"flex",gap:10}}>
+<div style={{flex:1}}><Field label="Prazo"><Inp type="date" value={form.due} onChange={e=>setForm(f=>({...f,due:e.target.value}))}/></Field></div>
+<div style={{flex:1}}><Field label="Responsável"><Inp value={form.resp} onChange={e=>setForm(f=>({...f,resp:e.target.value}))} placeholder="Nome..."/></Field></div>
+</div>
+<Field label="Descrição"><Txta value={form.desc} onChange={e=>setForm(f=>({...f,desc:e.target.value}))} placeholder="Detalhes..."/></Field>
+<div style={{display:"flex",gap:10,marginTop:4}}>
+<GBtn onClick={()=>setSheet(false)} style={{flex:1}}>Cancelar</GBtn>
+<PBtn onClick={save} style={{flex:2}}>Salvar tarefa</PBtn>
+</div>
+</Sheet>
+</div>
+);
+}
+
+/* ── CONTACTS ── */
+function ContactsScreen({contacts,setContacts,events,tasks}) {
+const [search,setSearch]=useState("");
+const [filter,setFilter]=useState("todos");
+const [sheet,setSheet]=useState(false);
+const [detail,setDetail]=useState(null);
+const [form,setForm]=useState({name:"",company:"",role:"",email:"",phone:"",tipo:"cliente",notes:""});
+const [editId,setEditId]=useState(null);
+const TIPOS={cliente:{label:"Cliente",color:C.blue,bg:C.blueSoft},fornecedor:{label:"Fornecedor",color:C.teal,bg:C.tealSoft},parceiro:{label:"Parceiro",color:C.accent,bg:"#1a2a00"},outro:{label:"Outro",color:C.muted,bg:C.border}};
+
+function openAdd(){setForm({name:"",company:"",role:"",email:"",phone:"",tipo:"cliente",notes:""});setEditId(null);setSheet(true);}
+function openEdit(c){setForm({...c});setEditId(c.id);setSheet(true);setDetail(null);}
+function save(){
+if(!form.name)return;
+if(editId) setContacts(cs=>cs.map(c=>c.id===editId?{...form,id:editId}:c));
+else setContacts(cs=>[...cs,{...form,id:Date.now()}]);
+setSheet(false);
+}
+function getHistory(c){
+const evs=events.filter(e=>(e.desc||"").toLowerCase().includes(c.name.toLowerCase())||(e.title||"").toLowerCase().includes(c.name.toLowerCase()));
+const tsk=tasks.filter(t=>(t.resp||"").toLowerCase().includes(c.name.toLowerCase()));
+return {evs,tsk};
+}
+const filtered=contacts.filter(c=>{
+const q=search.toLowerCase();
+const ms=!q||c.name.toLowerCase().includes(q)||(c.company||"").toLowerCase().includes(q);
+return ms&&(filter==="todos"||c.tipo===filter);
+});
+
+if(detail){
+const c=detail, t=TIPOS[c.tipo]||TIPOS.outro, cc=CARD_COLORS[contacts.indexOf(c)%CARD_COLORS.length]||CARD_COLORS[0];
+const {evs,tsk}=getHistory(c);
+return (
+<div style={{padding:"0 20px"}}>
+<button onClick={()=>setDetail(null)} style={{background:"none",border:"none",color:C.accent,fontSize:15,fontWeight:700,cursor:"pointer",marginBottom:16}}>← Voltar</button>
+<div style={{background:cc.bg,borderRadius:20,padding:"24px 20px",marginBottom:16,textAlign:"center"}}>
+<div style={{width:72,height:72,borderRadius:20,background:"rgba(0,0,0,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,fontWeight:800,color:cc.text,margin:"0 auto 12px"}}>
+{c.name.split(" ").slice(0,2).map(w=>w[0]).join("").toUpperCase()}
+</div>
+<div style={{fontSize:22,fontWeight:800,color:cc.text}}>{c.name}</div>
+{(c.role||c.company)&&<div style={{fontSize:14,color:cc.text,opacity:0.7,marginTop:4}}>{[c.role,c.company].filter(Boolean).join(" · ")}</div>}
+<span style={{background:"rgba(0,0,0,0.15)",color:cc.text,borderRadius:8,padding:"4px 12px",fontSize:12,fontWeight:700,marginTop:8,display:"inline-block"}}>{t.label}</span>
+</div>
+<div style={{background:C.card,borderRadius:16,padding:16,marginBottom:16,border:`1.5px solid ${C.border}`}}>
+{c.email&&<a href={`mailto:${c.email}`} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",textDecoration:"none",color:C.text,borderBottom:`1px solid ${C.border}`,fontSize:14}}>✉️ {c.email}</a>}
+{c.phone&&<div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",fontSize:14,color:C.text}}>📞 {c.phone}</div>}
+{c.notes&&<div style={{padding:"8px 0",fontSize:13,color:C.sub}}>💬 {c.notes}</div>}
+</div>
+{(evs.length>0||tsk.length>0)&&(
+<div style={{marginBottom:16}}>
+<div style={{fontSize:13,fontWeight:700,color:C.sub,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:10}}>Histórico</div>
+{evs.map(e=><div key={e.id} style={{background:C.card,border:`1.5px solid ${C.border}`,borderRadius:12,padding:"10px 14px",marginBottom:8,fontSize:13,color:C.text}}>📅 {e.title} · {fmtDate(e.date)}</div>)}
+{tsk.map(t=><div key={t.id} style={{background:C.card,border:`1.5px solid ${C.border}`,borderRadius:12,padding:"10px 14px",marginBottom:8,fontSize:13,color:C.text}}>✓ {t.title}</div>)}
+</div>
+)}
+<div style={{display:"flex",gap:10}}>
+<GBtn onClick={()=>openEdit(c)} style={{flex:1}}>Editar</GBtn>
+<button onClick={()=>{setContacts(cs=>cs.filter(x=>x.id!==c.id));setDetail(null);}} style={{background:C.redSoft,border:`1px solid ${C.red}33`,borderRadius:12,padding:"10px 18px",cursor:"pointer",fontSize:14,color:C.red,fontWeight:600}}>Excluir</button>
+</div>
+</div>
+);
+}
+
+return (
+<div>
+<div style={{padding:"0 20px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+<div style={{fontSize:24,fontWeight:800,color:C.text}}>Contatos</div>
+<button onClick={openAdd} style={{background:C.accent,color:"#111",border:"none",borderRadius:14,padding:"10px 18px",fontSize:15,fontWeight:800,cursor:"pointer"}}>+ Novo</button>
+</div>
+<div style={{padding:"0 20px 12px"}}>
+<input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Buscar..." style={{width:"100%",background:C.card,border:`1.5px solid ${C.border}`,borderRadius:14,padding:"12px 16px",color:C.text,fontSize:15,outline:"none",boxSizing:"border-box"}}/>
+</div>
+<div style={{display:"flex",gap:8,overflowX:"auto",padding:"0 20px 16px",scrollbarWidth:"none"}}>
+<Chip label="Todos" active={filter==="todos"} onClick={()=>setFilter("todos")}/>
+{Object.entries(TIPOS).map(([k,v])=><Chip key={k} label={v.label} active={filter===k} onClick={()=>setFilter(k)} color={v.color}/>)}
+</div>
+<div style={{padding:"0 20px",display:"flex",flexDirection:"column",gap:10}}>
+{filtered.length===0?(
+<div style={{textAlign:"center",padding:"48px 0",color:C.muted}}><div style={{fontSize:40,marginBottom:12}}>👥</div>Nenhum contato</div>
+):filtered.map((c,i)=>{
+const t=TIPOS[c.tipo]||TIPOS.outro, cc=CARD_COLORS[i%CARD_COLORS.length];
+return (
+<div key={c.id} onClick={()=>setDetail(c)} style={{background:C.card,border:`1.5px solid ${C.border}`,borderRadius:18,padding:"16px",cursor:"pointer"}}>
+<div style={{display:"flex",gap:12,alignItems:"center"}}>
+<div style={{width:48,height:48,borderRadius:16,background:cc.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:800,color:cc.text,flexShrink:0}}>
+{c.name.split(" ").slice(0,2).map(w=>w[0]).join("").toUpperCase()}
+</div>
+<div style={{flex:1}}>
+<div style={{fontWeight:800,color:C.text,fontSize:15}}>{c.name}</div>
+{(c.role||c.company)&&<div style={{fontSize:12,color:C.muted,marginTop:2}}>{[c.role,c.company].filter(Boolean).join(" · ")}</div>}
+</div>
+<span style={{background:t.bg,color:t.color,borderRadius:8,padding:"4px 10px",fontSize:11,fontWeight:700}}>{t.label}</span>
+</div>
+</div>
+);
+})}
+</div>
+<Sheet open={sheet} onClose={()=>setSheet(false)} title={editId?"Editar contato":"Novo contato"}>
+<div style={{display:"flex",gap:10}}>
+<div style={{flex:2}}><Field label="Nome"><Inp value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Nome completo"/></Field></div>
+<div style={{flex:1}}><Field label="Tipo"><Sel value={form.tipo} onChange={e=>setForm(f=>({...f,tipo:e.target.value}))}><option value="cliente">Cliente</option><option value="fornecedor">Fornecedor</option><option value="parceiro">Parceiro</option><option value="outro">Outro</option></Sel></Field></div>
+</div>
+<div style={{display:"flex",gap:10}}>
+<div style={{flex:1}}><Field label="Empresa"><Inp value={form.company} onChange={e=>setForm(f=>({...f,company:e.target.value}))} placeholder="Acme Ltda"/></Field></div>
+<div style={{flex:1}}><Field label="Cargo"><Inp value={form.role} onChange={e=>setForm(f=>({...f,role:e.target.value}))} placeholder="Gerente"/></Field></div>
+</div>
+<Field label="E-mail"><Inp type="email" value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))} placeholder="email@empresa.com"/></Field>
+<Field label="Telefone"><Inp value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))} placeholder="(00) 00000-0000"/></Field>
+<Field label="Observações"><Txta value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} placeholder="Notas..."/></Field>
+<div style={{display:"flex",gap:10,marginTop:4}}>
+<GBtn onClick={()=>setSheet(false)} style={{flex:1}}>Cancelar</GBtn>
+<PBtn onClick={save} style={{flex:2}}>Salvar contato</PBtn>
+</div>
+</Sheet>
+</div>
+);
+}
+
+/* ── NOTES ── */
+function NotesScreen({notes,setNotes}) {
+const [sheet,setSheet]=useState(false);
+const [form,setForm]=useState({title:"",content:"",color:"#C8FF57"});
+const [editId,setEditId]=useState(null);
+const COLORS=["#C8FF57","#4F8EF7","#FF7A3D","#34D4C8","#FFD166","#a78bfa","#FF5B5B"];
+
+function openAdd(){setForm({title:"",content:"",color:"#C8FF57"});setEditId(null);setSheet(true);}
+function openEdit(n){setForm({...n});setEditId(n.id);setSheet(true);}
+function save(){
+if(!form.content)return;
+if(editId) setNotes(ns=>ns.map(n=>n.id===editId?{...form,id:editId}:n));
+else setNotes(ns=>[...ns,{...form,id:Date.now()}]);
+setSheet(false);
+}
+
+return (
+<div>
+<div style={{padding:"0 20px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+<div>
+<div style={{fontSize:24,fontWeight:800,color:C.text}}>Anotações</div>
+<div style={{fontSize:13,color:C.muted}}>{notes.length} notas</div>
+</div>
+<button onClick={openAdd} style={{background:C.accent,color:"#111",border:"none",borderRadius:14,padding:"10px 18px",fontSize:15,fontWeight:800,cursor:"pointer"}}>+ Nova</button>
+</div>
+<div style={{padding:"0 20px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+{notes.length===0?(
+<div style={{gridColumn:"1/-1",textAlign:"center",padding:"48px 0",color:C.muted}}><div style={{fontSize:40,marginBottom:12}}>📝</div>Nenhuma anotação</div>
+):notes.map(n=>{
+const isLight=["#C8FF57","#34D4C8","#FFD166"].includes(n.color);
+const tc=isLight?"#111":"#fff";
+return (
+<div key={n.id} style={{background:n.color||"#C8FF57",borderRadius:18,padding:"16px",minHeight:120}}>
+{n.title&&<div style={{fontSize:13,fontWeight:800,color:tc,marginBottom:8}}>{n.title}</div>}
+<div style={{fontSize:13,color:tc,opacity:0.85,lineHeight:1.5,wordBreak:"break-word"}}>{n.content}</div>
+<div style={{display:"flex",gap:6,marginTop:12}}>
+<button onClick={()=>openEdit(n)} style={{background:"rgba(0,0,0,0.12)",border:"none",borderRadius:8,padding:"5px 8px",cursor:"pointer",fontSize:12,color:tc}}>✏️</button>
+<button onClick={()=>setNotes(ns=>ns.filter(x=>x.id!==n.id))} style={{background:"rgba(0,0,0,0.12)",border:"none",borderRadius:8,padding:"5px 8px",cursor:"pointer",fontSize:12,color:tc}}>🗑</button>
+</div>
+</div>
+);
+})}
+</div>
+<Sheet open={sheet} onClose={()=>setSheet(false)} title={editId?"Editar nota":"Nova anotação"}>
+<Field label="Título (opcional)"><Inp value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))} placeholder="Ex: Ideias de reunião"/></Field>
+<Field label="Conteúdo"><Txta value={form.content} onChange={e=>setForm(f=>({...f,content:e.target.value}))} placeholder="Escreva sua anotação..." style={{minHeight:120}}/></Field>
+<Field label="Cor">
+<div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+{COLORS.map(col=><button key={col} onClick={()=>setForm(f=>({...f,color:col}))} style={{width:32,height:32,borderRadius:10,background:col,border:form.color===col?`3px solid ${C.text}`:"3px solid transparent",cursor:"pointer"}}/>)}
+</div>
+</Field>
+<div style={{display:"flex",gap:10,marginTop:4}}>
+<GBtn onClick={()=>setSheet(false)} style={{flex:1}}>Cancelar</GBtn>
+<PBtn onClick={save} style={{flex:2}}>Salvar nota</PBtn>
+</div>
+</Sheet>
+</div>
+);
+}
+
+/* ── ROOT ── */
+export default function App() {
+const [tab,setTab]=useState("home");
+const [events,setEvents]=useLS("rs_events",[
+{id:1,title:"Reunião com cliente",date:todayStr(),time:"10:00",local:"Sala 1",desc:"Apresentação de proposta",tipo:"reuniao",status:"agendado"},
+{id:2,title:"Almoço de equipe",date:todayStr(),time:"12:30",local:"Restaurante Central",desc:"",tipo:"outro",status:"agendado"},
+]);
+const [tasks,setTasks]=useLS("rs_tasks",[
+{id:1,title:"Enviar proposta",priority:"alta",status:"pendente",due:todayStr(),resp:"João",desc:""},
+{id:2,title:"Atualizar planilha",priority:"media",status:"andamento",due:"",resp:"Maria",desc:""},
+]);
+const [contacts,setContacts]=useLS("rs_contacts",[
+{id:1,name:"Ana Costa",company:"TechBrasil",role:"Diretora",email:"ana@techbrasil.com.br",phone:"(11) 98765-4321",tipo:"cliente",notes:""},
+{id:2,name:"Carlos Lima",company:"Fornecedora XYZ",role:"Gerente",email:"clima@xyz.com",phone:"(21) 3344-5566",tipo:"fornecedor",notes:""},
+]);
+const [notes,setNotes]=useLS("rs_notes",[]);
+
+return (
+<>
+<style>{`
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;800&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:${C.bg};font-family:'DM Sans',sans-serif;-webkit-font-smoothing:antialiased;}
+::-webkit-scrollbar{display:none;}
+@keyframes sheetUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
+input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.5);}
+input::placeholder,textarea::placeholder{color:${C.muted};}
+button{font-family:'DM Sans',sans-serif;}
+`}</style>
+<div style={{maxWidth:430,margin:"0 auto",minHeight:"100vh",background:C.bg,display:"flex",flexDirection:"column"}}>
+<div style={{flex:1,overflowY:"auto",paddingTop:24,paddingBottom:100}}>
+{tab==="home"&&<HomeScreen events={events} tasks={tasks} contacts={contacts} setTab={setTab}/>}
+{tab==="agenda"&&<AgendaScreen events={events} setEvents={setEvents}/>}
+{tab==="tasks"&&<TasksScreen tasks={tasks} setTasks={setTasks}/>}
+{tab==="contacts"&&<ContactsScreen contacts={contacts} setContacts={setContacts} events={events} tasks={tasks}/>}
+{tab==="notes"&&<NotesScreen notes={notes} setNotes={setNotes}/>}
+</div>
+<div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:C.surface,borderTop:`1px solid ${C.border}`,display:"flex",padding:"10px 8px 20px",zIndex:50}}>
+{NAV.map(n=>{
+const active=tab===n.id;
+return (
+<button key={n.id} onClick={()=>setTab(n.id)} style={{flex:1,background:"none",border:"none",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:4,padding:"6px 4px"}}>
+<div style={{width:44,height:44,borderRadius:14,background:active?C.accent:"transparent",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,transition:"all 0.2s"}}>{n.icon}</div>
+<span style={{fontSize:10,fontWeight:700,color:active?C.accent:C.muted,letterSpacing:"0.04em"}}>{n.label}</span>
+</button>
+);
+})}
+</div>
+</div>
+</>
+);
+}
